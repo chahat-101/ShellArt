@@ -1,6 +1,6 @@
 use clap::Parser;
 use image::GenericImageView;
-use std::collections::HashMap;
+use image::imageops::FilterType;
 
 const WEIGHTS: [f32; 3] = [0.299, 0.587, 0.114];
 
@@ -8,30 +8,36 @@ const WEIGHTS: [f32; 3] = [0.299, 0.587, 0.114];
 struct Args {
     #[arg(long, alias = "p")]
     path: String,
+    #[arg(long, default_value_t = 100)]
+    width: u32,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let path = args.path;
+    let target_width = args.width;
 
     let ascii_chars: Vec<char> = "Ña#W$9876543210?!abc;:+=-,._".chars().collect();
 
-    let brightness_point = 10.0;
-
     let img = image::open(path)?;
+    let (orig_height, orig_width) = img.dimensions();
 
-    let rgba_8 = img.to_rgba8();
+    let aspect_ratio = (orig_height as f32) / (orig_width as f32);
+    let target_height = (orig_height as f32 * aspect_ratio * 0.5) as u32;
 
-    let width = img.width();
+    let resized_img = img.resize_exact(target_width, target_height, FilterType::Triangle);
+
+    let rgba_8 = resized_img.to_rgba8();
+    let width = resized_img.width();
+
+    println!("{:?} , {:?}", img.dimensions(), resized_img.dimensions());
 
     for (x, _y, pixel) in rgba_8.enumerate_pixels() {
-        let brightness = WEIGHTS[0] * pixel[0] as f32
-            + WEIGHTS[1] * pixel[1] as f32
-            + WEIGHTS[2] * pixel[2] as f32;
+        let brightness = WEIGHTS[0] * pixel[0] as f32 + WEIGHTS[1] * pixel[1] as f32;
+
         let index = ((brightness / 255.0) * 27.0) as usize;
 
-        let ascii_char = ascii_chars[index] as char;
-
+        let ascii_char = ascii_chars[index];
         print!("{}", ascii_char);
 
         if x == width - 1 {
@@ -42,15 +48,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn gray_scale_converter(path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let img = image::open(path)?;
+fn gray_scale_converter(
+    img_path: &str,
+    save_path: &mut str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let img = image::open(img_path)?;
 
     let mut rgba8_img = img.to_rgba8();
 
     println!("{:?}", img.color());
 
-    for (x, y, pixel) in rgba8_img.enumerate_pixels_mut() {
-        let (r, g, b, a) = (pixel[0], pixel[1], pixel[2], pixel[3]);
+    for (_x, _y, pixel) in rgba8_img.enumerate_pixels_mut() {
+        let (r, g, b, _a) = (pixel[0], pixel[1], pixel[2], pixel[3]);
 
         let gray_scale_point =
             r as f32 * WEIGHTS[0] + g as f32 * WEIGHTS[1] + b as f32 * WEIGHTS[2];
@@ -60,7 +69,9 @@ fn gray_scale_converter(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         pixel[2] = gray_scale_point as u8;
     }
 
-    rgba8_img.save("output2.png").expect("failed to save");
+    let save_path = format!("{}.png", save_path);
+
+    rgba8_img.save(save_path).expect("failed to save");
 
     Ok(())
 }
