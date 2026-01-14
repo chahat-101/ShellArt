@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (orig_height, orig_width) = img.dimensions();
 
     let aspect_ratio = (orig_height as f32) / (orig_width as f32);
-    let target_height = (orig_height as f32 * aspect_ratio * 0.5) as u32;
+    let target_height = (target_width as f32 * aspect_ratio * 0.5) as u32;
 
     let resized_img = img.resize_exact(target_width, target_height, FilterType::Triangle);
 
@@ -33,7 +33,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{:?} , {:?}", img.dimensions(), resized_img.dimensions());
 
     for (x, _y, pixel) in rgba_8.enumerate_pixels() {
-        let brightness = WEIGHTS[0] * pixel[0] as f32 + WEIGHTS[1] * pixel[1] as f32;
+        let brightness = WEIGHTS[0] * pixel[0] as f32
+            + WEIGHTS[1] * pixel[1] as f32
+            + WEIGHTS[2] * pixel[2] as f32;
 
         let index = ((brightness / 255.0) * 27.0) as usize;
 
