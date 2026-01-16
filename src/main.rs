@@ -1,6 +1,5 @@
 use clap::{Parser, ValueEnum};
 use colored::*;
-mod utils;
 use image::RgbImage;
 #[derive(Parser)]
 struct Args {
@@ -11,6 +10,23 @@ struct Args {
     charset: CharSet,
     #[arg(long, default_value_t = 100)]
     width: u32,
+    #[arg(long, short, default_value_t = false)]
+    invert: bool,
+}
+
+impl CharSet {
+    fn get_chars(&self) -> &'static str {
+        match self {
+            CharSet::Retro => " ░▒▓█",
+            CharSet::Default => " .:-=+*#%@",
+            CharSet::Light => {
+                " .`'\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
+            } // Sorted by density
+            CharSet::Detailed => {
+                "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`'. "
+            }
+        }
+    }
 }
 
 #[derive(Clone, ValueEnum)]
@@ -19,26 +35,6 @@ enum CharSet {
     Default,
     Light,
     Detailed,
-}
-
-fn get_charset(charset: CharSet) -> Vec<char> {
-    let chars_string = match charset {
-        // Blocks (Good for solid UIs)
-        CharSet::Retro => " ░▒▓█",
-
-        // Standard ASCII (Good balance)
-        CharSet::Default => "@%#*+=-:. ",
-
-        // Minimal (High contrast)
-        CharSet::Light => "#+-. ",
-
-        // High Detail (Smooth gradients for high res)
-        CharSet::Detailed => {
-            "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`'. "
-        }
-    };
-
-    chars_string.chars().collect()
 }
 
 const WEIGHTS: [f32; 3] = [0.299, 0.587, 0.114];
@@ -104,14 +100,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = args.path;
     let target_width = args.width;
 
-    let ascii_chars = get_charset(args.charset);
+    let chars_str = args.charset.get_chars();
+
+    let ascii_chars: Vec<char> = if args.invert {
+        chars_str.chars().rev().collect()
+    } else {
+        chars_str.chars().collect()
+    };
+
     let img = image::open(path)?.to_rgb8();
     let (img_width, img_height) = img.dimensions();
+
     let aspect = 0.5;
     let (block_w, block_h) = calculate_block_size(img_width, img_height, target_width, aspect);
 
     let mut blocks_data: Vec<Vec<BlockSample>> = Vec::new();
-
     for y0 in (0..img_height).step_by(block_h as usize) {
         let mut row: Vec<BlockSample> = Vec::new();
         for x0 in (0..img_width).step_by(block_w as usize) {
@@ -127,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for block in row {
             let lum = block.lum;
 
-            let index = ((lum / 255.0) * (4.0)).round() as usize;
+            let index = ((lum / 255.0) * ((ascii_chars.len() - 1) as f32)).round() as usize;
             let character = ascii_chars[index].to_string();
             ascii_art.push_str(&character.truecolor(block.r, block.g, block.b).to_string());
         }
@@ -135,6 +138,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("{}", ascii_art);
-
     Ok(())
 }
