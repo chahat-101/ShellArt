@@ -1,59 +1,58 @@
-use image::RgbImage;
-use std::f32;
-const WEIGHTS: [f32; 3] = [0.299, 0.587, 0.114];
-pub struct BlockSample {
-    pub lum: f32,
-    pub r: u8,
-    pub b: u8,
-    pub g: u8,
-}
+use opencv::{Result, core, highgui, prelude::*, videoio};
+use opencv::videoio::VideoCapture;
+use opencv::core::{Vec3b};
 
-pub fn block_color(img: &RgbImage, x0: u32, y0: u32, w: u32, h: u32) -> BlockSample {
-    let (img_w, img_h) = img.dimensions();
 
-    let mut r_sum = 0u32;
-    let mut g_sum = 0u32;
-    let mut b_sum = 0u32;
-    let mut count = 0u32;
 
-    let y_end = (y0 + h).min(img_h);
-    let x_end = (x0 + w).min(img_w);
 
-    for y in y0..y_end {
-        for x in x0..x_end {
-            let pixel = img.get_pixel(x, y);
 
-            r_sum += pixel[0] as u32;
-            g_sum += pixel[1] as u32;
-            b_sum += pixel[2] as u32;
-            count += 1;
+
+pub const WEIGHTS:[f32;3] = [0.299,0.587,0.114];
+
+
+pub fn get_frame_data(cam: &mut VideoCapture,frame:&mut Mat,flipped:bool,grey_scale:bool) -> Result<()>{
+
+    
+    cam.read(frame);
+
+    if grey_scale{
+        for row in 0..frame.rows(){
+            for col in 0..frame.cols(){
+
+                let mut pixel= frame.at_2d_mut::<Vec3b>(row, col)?;
+
+                
+                let grey_value = (
+                    pixel[0] as f32 * WEIGHTS[2] +
+                    pixel[1] as f32 * WEIGHTS[1] +
+                    pixel[2] as f32 * WEIGHTS[0]
+                ) as u8;
+
+                pixel[0] = grey_value;
+                pixel[1] = grey_value;
+                pixel[2] = grey_value;
+            
+            }
         }
-    }
-    let r = (r_sum / count) as u8;
-    let g = (g_sum / count) as u8;
-    let b = (b_sum / count) as u8;
+    }    
 
-    let brightness = WEIGHTS[0] * r as f32 + WEIGHTS[1] * g as f32 + WEIGHTS[2] * b as f32;
+    if flipped{
+        let mut flipped_frame = Mat::default();
+        core::flip(frame,&mut flipped_frame, 1);
+        *frame = flipped_frame;
+        return Ok(());
+    } 
 
-    BlockSample {
-        lum: brightness,
-        r,
-        g,
-        b,
-    }
+
+    Ok(())
+
 }
 
-pub fn calculate_block_size(
-    img_width: u32,
-    img_height: u32,
-    target_width: u32,
-    aspect: f32,
-) -> (u32, u32) {
-    let block_w = img_width as f32 / target_width as f32;
-    let block_h = block_w as f32 / aspect;
 
-    let block_w = block_w.max(1.0).round() as u32;
-    let block_h = block_h.max(1.0).round() as u32;
+pub fn assign_chars() -> Result<()>{
+    
 
-    (block_w, block_h)
+    
+    
+    Ok(())
 }
