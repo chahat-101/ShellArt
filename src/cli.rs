@@ -1,39 +1,22 @@
 use clap::{Parser,ValueEnum};
+use crate::utils;
+use utils::CharSet;
 
 #[derive(Parser)]
-struct Args {
+pub struct Args {
     /// Flip the image horizontally
-    #[arg(long)]
-    charset: bool,
+    #[arg(long,value_enum,default_value_t = CharSet::Default)]
+    pub charset: CharSet,
 
     /// Convert frame to grey scale
     #[arg(long)]
-    grey_scale: bool,
+    pub grey_scale: bool,
+
+    #[arg(long,default_value_t = 300)]
+    pub width: i32,
 
     /// Camera device index
     #[arg(long, default_value_t = 0)]
-    device: i32,
+    pub device: i32,
 }
 
-impl CharSet {
-    fn get_chars(&self) -> &'static str {
-        match self {
-            CharSet::Retro => " ░▒▓█",
-            CharSet::Default => " .:-=+*#%@",
-            CharSet::Light => {
-                " .`'\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
-            } // Sorted by density
-            CharSet::Detailed => {
-                "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`'. "
-            }
-        }
-    }
-}
-
-#[derive(Clone, ValueEnum)]
-enum CharSet {
-    Retro,
-    Default,
-    Light,
-    Detailed,
-}
