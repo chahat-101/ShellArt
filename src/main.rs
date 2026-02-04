@@ -7,12 +7,13 @@ use crossterm::{
     ExecutableCommand, QueueableCommand,
 };
 use opencv::imgproc;
-use opencv::{core, highgui, prelude::*, videoio};
+use opencv::{core, prelude::*, videoio};
 use opencv::core::{Size, Vec3b};
 use std::io::{stdout, Write};
 use rand::Rng;
+use eframe::egui;
 
-#[derive(Clone, ValueEnum, Default, PartialEq)]
+#[derive(Clone, ValueEnum, Default, PartialEq, Copy, Debug)]
 pub enum CharSet {
     Retro,
     #[default]
@@ -38,7 +39,7 @@ impl CharSet {
     }
 }
 
-#[derive(Clone, ValueEnum, Default, PartialEq, Debug)]
+#[derive(Clone, ValueEnum, Default, PartialEq, Debug, Copy)]
 pub enum ArtMode {
     #[default] Standard,   // Original Colors
     Grayscale,  // Black & White
@@ -51,7 +52,7 @@ pub enum ArtMode {
     Glitch,     // Random artifacts
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 pub struct Args {
     /// Flip the image horizontally
     #[arg(long, value_enum, default_value_t = CharSet::Default)]
@@ -61,7 +62,7 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = ArtMode::Standard)]
     pub mode: ArtMode,
 
-    #[arg(long, default_value_t = 300)]
+    #[arg(long, default_value_t = 150)]
     pub width: i32,
 
     /// Camera device index
@@ -262,16 +263,15 @@ fn get_color(sample: &BlockSample, mode: &ArtMode, x: usize, y: usize, frame_cou
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let cam = videoio::VideoCapture::new(args.device, videoio::CAP_ANY)?;
-
-    if !cam.is_opened().map_err(|e| anyhow::anyhow!(e))? {
-        return Err(anyhow::anyhow!("Could not open video device {}", args.device));
-    }
-
+    
     if args.terminal {
+        let cam = videoio::VideoCapture::new(args.device, videoio::CAP_ANY)?;
+        if !cam.is_opened().map_err(|e| anyhow::anyhow!(e))? {
+            return Err(anyhow::anyhow!("Could not open video device {}", args.device));
+        }
         run_terminal_mode(cam, args)?;
     } else {
-        run_gui_mode(cam, args)?;
+        run_gui_mode(args)?;
     }
 
     Ok(())
@@ -340,86 +340,118 @@ fn run_terminal_mode(mut cam: videoio::VideoCapture, args: Args) -> anyhow::Resu
     Ok(())
 }
 
-fn run_gui_mode(mut cam: videoio::VideoCapture, args: Args) -> anyhow::Result<()> {
-    let char_set_str = CharSet::get_chars(&args.charset);
-    let char_vec: Vec<char> = char_set_str.chars().collect();
-    let width = args.width;
+struct ShellArtApp {
+    cam: videoio::VideoCapture,
+    mode: ArtMode,
+    charset: CharSet,
+    width: i32,
+    flipped: bool,
+    font_size: f32,
+    frame_count: usize,
+}
 
-    highgui::named_window("Camera", highgui::WINDOW_AUTOSIZE).map_err(|e| anyhow::anyhow!(e))?;
-    highgui::named_window("Ascii-art ", highgui::WINDOW_AUTOSIZE).map_err(|e| anyhow::anyhow!(e))?;
-
-    let mut frame = Mat::default();
-    let mut ascii_frame = Mat::default();
-    let mut frame_count = 0;
-    let mut rng = rand::thread_rng();
-
-    loop {
-        get_frame_data(&mut cam, &mut frame, true).map_err(|e| anyhow::anyhow!(e))?;
-
-        if frame.empty() {
-            continue;
+impl ShellArtApp {
+    fn new(device: i32, args: Args) -> anyhow::Result<Self> {
+        let cam = videoio::VideoCapture::new(device, videoio::CAP_ANY)?;
+        if !cam.is_opened().map_err(|e| anyhow::anyhow!(e))? {
+            return Err(anyhow::anyhow!("Could not open video device {}", device));
         }
-
-        highgui::imshow("Camera", &frame).map_err(|e| anyhow::anyhow!(e))?;
-
-        let mut ascii_data: Vec<Vec<(BlockSample, char)>> = Vec::new();
-        assign_chars(&mut ascii_data, char_set_str, &frame, width).map_err(|e| anyhow::anyhow!(e))?;
-
-        if ascii_frame.size().map_err(|e| anyhow::anyhow!(e))? != frame.size().map_err(|e| anyhow::anyhow!(e))?
-            || ascii_frame.typ() != frame.typ()
-        {
-            ascii_frame = Mat::new_rows_cols_with_default(
-                frame.rows(),
-                frame.cols(),
-                frame.typ(),
-                core::Scalar::all(0.0),
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
-        } else {
-            ascii_frame
-                .set_to(&core::Scalar::all(0.0), &core::no_array())
-                .map_err(|e| anyhow::anyhow!(e))?;
-        }
-
-        let block_size = calculate_block_size(frame.size().map_err(|e| anyhow::anyhow!(e))?.width, width);
-
-        for (y, row) in ascii_data.iter().enumerate() {
-            for (x, (sample, ch)) in row.iter().enumerate() {
-                
-                let (r, g, b) = get_color(sample, &args.mode, x, y, frame_count);
-                let color = opencv::core::Scalar::new(b as f64, g as f64, r as f64, 0.0);
-
-                let final_char = if args.mode == ArtMode::Glitch && rng.gen_bool(0.02) {
-                    char_vec[rng.gen_range(0..char_vec.len())].to_string()
-                } else {
-                    ch.to_string()
-                };
-
-                imgproc::put_text(
-                    &mut ascii_frame,
-                    &final_char,
-                    opencv::core::Point::new(
-                        (x as i32) * block_size.0 as i32,
-                        (y as i32) * block_size.1 as i32 + block_size.1 as i32,
-                    ),
-                    imgproc::FONT_HERSHEY_PLAIN,
-                    block_size.0 as f64 / 10.0,
-                    color,
-                    1,
-                    imgproc::LINE_AA,
-                    false,
-                )
-                .map_err(|e| anyhow::anyhow!(e))?;
-            }
-        }
-
-        highgui::imshow("Ascii-art ", &ascii_frame).map_err(|e| anyhow::anyhow!(e))?;
-
-        let key = highgui::wait_key(1).map_err(|e| anyhow::anyhow!(e))?;
-        if key == 'q' as i32 {
-            break;
-        }
-        frame_count = frame_count.wrapping_add(1);
+        Ok(Self {
+            cam,
+            mode: args.mode,
+            charset: args.charset,
+            width: args.width,
+            flipped: true,
+            font_size: 8.0,
+            frame_count: 0,
+        })
     }
-    Ok(())
+}
+
+impl eframe::App for ShellArtApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::SidePanel::left("controls").show(ctx, |ui| {
+            ui.heading("Controls");
+            
+            ui.add(egui::Slider::new(&mut self.width, 10..=400).text("Width"));
+            ui.add(egui::Slider::new(&mut self.font_size, 2.0..=20.0).text("Font Size"));
+            ui.checkbox(&mut self.flipped, "Flip Horizontal");
+            
+            ui.separator();
+            ui.label("Mode:");
+            ui.radio_value(&mut self.mode, ArtMode::Standard, "Standard");
+            ui.radio_value(&mut self.mode, ArtMode::Grayscale, "Grayscale");
+            ui.radio_value(&mut self.mode, ArtMode::Matrix, "Matrix");
+            ui.radio_value(&mut self.mode, ArtMode::Thermal, "Thermal");
+            ui.radio_value(&mut self.mode, ArtMode::Amber, "Amber");
+            ui.radio_value(&mut self.mode, ArtMode::Neon, "Neon");
+            ui.radio_value(&mut self.mode, ArtMode::Rainbow, "Rainbow");
+            ui.radio_value(&mut self.mode, ArtMode::Cga, "CGA");
+            ui.radio_value(&mut self.mode, ArtMode::Glitch, "Glitch");
+
+            ui.separator();
+            ui.label("Charset:");
+            ui.radio_value(&mut self.charset, CharSet::Default, "Default");
+            ui.radio_value(&mut self.charset, CharSet::Retro, "Retro");
+            ui.radio_value(&mut self.charset, CharSet::Light, "Light");
+            ui.radio_value(&mut self.charset, CharSet::Detailed, "Detailed");
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let mut frame = Mat::default();
+            if let Ok(_) = get_frame_data(&mut self.cam, &mut frame, self.flipped) {
+                if !frame.empty() {
+                    let mut ascii_data: Vec<Vec<(BlockSample, char)>> = Vec::new();
+                    let char_set_str = self.charset.get_chars();
+                    let char_vec: Vec<char> = char_set_str.chars().collect();
+                    if let Ok(_) = assign_chars(&mut ascii_data, char_set_str, &frame, self.width) {
+                        
+                        let mut job = egui::text::LayoutJob::default();
+                        let mut rng = rand::thread_rng();
+                        
+                        for (y, row) in ascii_data.iter().enumerate() {
+                            for (x, (sample, ch)) in row.iter().enumerate() {
+                                let (r, g, b) = get_color(sample, &self.mode, x, y, self.frame_count);
+                                
+                                let final_char = if self.mode == ArtMode::Glitch && rng.gen_bool(0.02) {
+                                    char_vec[rng.gen_range(0..char_vec.len())]
+                                } else {
+                                    *ch
+                                };
+
+                                job.append(&final_char.to_string(), 0.0, egui::TextFormat {
+                                    font_id: egui::FontId::monospace(self.font_size),
+                                    color: egui::Color32::from_rgb(r, g, b),
+                                    ..Default::default()
+                                });
+                            }
+                            job.append("\n", 0.0, egui::TextFormat::default());
+                        }
+
+                        egui::ScrollArea::both().show(ui, |ui| {
+                            ui.label(job);
+                        });
+                    }
+                }
+            }
+            self.frame_count = self.frame_count.wrapping_add(1);
+            ctx.request_repaint();
+        });
+    }
+}
+
+fn run_gui_mode(args: Args) -> anyhow::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 720.0]),
+        ..Default::default()
+    };
+    
+    eframe::run_native(
+        "ShellArt GUI",
+        options,
+        Box::new(|_cc| {
+            let app = ShellArtApp::new(args.device, args).expect("Failed to initialize app");
+            Box::new(app)
+        }),
+    ).map_err(|e| anyhow::anyhow!("eframe error: {}", e))
 }
