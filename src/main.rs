@@ -2,7 +2,7 @@ use clap::{Parser, ValueEnum};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode},
-    style::{Color, Print, SetForegroundColor},
+    style::{Color, Print, SetBackgroundColor, SetForegroundColor},
     terminal::{self},
     ExecutableCommand, QueueableCommand,
 };
@@ -20,11 +20,32 @@ pub enum CharSet {
     Default,
     Light,
     Detailed,
+    Blocks,
+    Binary,
+    Minimalist,
+    Modern,
+    Slashed,
     Testing,
     Testing2,
 }
 
 impl CharSet {
+    pub fn next(&self) -> Self {
+        match self {
+            CharSet::Retro => CharSet::Default,
+            CharSet::Default => CharSet::Light,
+            CharSet::Light => CharSet::Detailed,
+            CharSet::Detailed => CharSet::Blocks,
+            CharSet::Blocks => CharSet::Binary,
+            CharSet::Binary => CharSet::Minimalist,
+            CharSet::Minimalist => CharSet::Modern,
+            CharSet::Modern => CharSet::Slashed,
+            CharSet::Slashed => CharSet::Testing,
+            CharSet::Testing => CharSet::Testing2,
+            CharSet::Testing2 => CharSet::Retro,
+        }
+    }
+
     pub fn get_chars(&self) -> &'static str {
         match self {
             CharSet::Retro => " ░▒▓█",
@@ -33,6 +54,11 @@ impl CharSet {
             CharSet::Light => {
                 r###" .`'",:;Il!i><~+_-?][}{1)(|\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"###
             }
+            CharSet::Blocks => " ▏▎▍▌▋▊▉█",
+            CharSet::Binary => "01",
+            CharSet::Minimalist => " .·+",
+            CharSet::Modern => " .:-=+*#%@",
+            CharSet::Slashed => " /\\|",
             CharSet::Testing2 => "01",
             CharSet::Detailed => "$@B%8&WM #*oahkbdpqwmZO0QLCJUYXzcvunxrjft/()1{}[]?-_+~<>i!lI;:,",
         }
@@ -52,9 +78,25 @@ pub enum ArtMode {
     Glitch,     // Random artifacts
 }
 
+impl ArtMode {
+    pub fn next(&self) -> Self {
+        match self {
+            ArtMode::Standard => ArtMode::Grayscale,
+            ArtMode::Grayscale => ArtMode::Matrix,
+            ArtMode::Matrix => ArtMode::Thermal,
+            ArtMode::Thermal => ArtMode::Amber,
+            ArtMode::Amber => ArtMode::Neon,
+            ArtMode::Neon => ArtMode::Rainbow,
+            ArtMode::Rainbow => ArtMode::Cga,
+            ArtMode::Cga => ArtMode::Glitch,
+            ArtMode::Glitch => ArtMode::Standard,
+        }
+    }
+}
+
 #[derive(Parser, Clone)]
 pub struct Args {
-    /// Flip the image horizontally
+    /// Charset to use
     #[arg(long, value_enum, default_value_t = CharSet::Default)]
     pub charset: CharSet,
 
@@ -62,12 +104,21 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = ArtMode::Standard)]
     pub mode: ArtMode,
 
+    /// Width of the output
     #[arg(long, default_value_t = 150)]
     pub width: i32,
 
     /// Camera device index
     #[arg(long, default_value_t = 0)]
     pub device: i32,
+
+    /// Path to image or video file
+    #[arg(short, long)]
+    pub input: Option<String>,
+
+    /// Flip the image horizontally
+    #[arg(long, default_value_t = false)]
+    pub flip: bool,
 
     /// Render to terminal directly
     #[arg(long, default_value_t = false)]
@@ -89,16 +140,22 @@ pub fn get_frame_data(
     frame: &mut Mat,
     flipped: bool,
 ) -> opencv::Result<()> {
-    cam.read(frame)?;
+    let mut temp_frame = Mat::default();
+    cam.read(&mut temp_frame)?;
 
-    if frame.empty() {
-        return Ok(());
+    if temp_frame.empty() {
+        // Try to loop if it's a file
+        let _ = cam.set(videoio::CAP_PROP_POS_FRAMES, 0.0);
+        cam.read(&mut temp_frame)?;
+        if temp_frame.empty() {
+            return Ok(());
+        }
     }
 
     if flipped {
-        let mut flipped_frame = Mat::default();
-        core::flip(frame, &mut flipped_frame, 1)?;
-        *frame = flipped_frame;
+        core::flip(&temp_frame, frame, 1)?;
+    } else {
+        *frame = temp_frame;
     }
 
     Ok(())
@@ -264,29 +321,33 @@ fn get_color(sample: &BlockSample, mode: &ArtMode, x: usize, y: usize, frame_cou
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     
+    let cam = if let Some(input_path) = &args.input {
+        videoio::VideoCapture::from_file(input_path, videoio::CAP_ANY)?
+    } else {
+        videoio::VideoCapture::new(args.device, videoio::CAP_ANY)?
+    };
+
+    if !cam.is_opened().map_err(|e| anyhow::anyhow!(e))? {
+        return Err(anyhow::anyhow!("Could not open input: {:?}", args.input.as_deref().unwrap_or("camera")));
+    }
+
     if args.terminal {
-        let cam = videoio::VideoCapture::new(args.device, videoio::CAP_ANY)?;
-        if !cam.is_opened().map_err(|e| anyhow::anyhow!(e))? {
-            return Err(anyhow::anyhow!("Could not open video device {}", args.device));
-        }
         run_terminal_mode(cam, args)?;
     } else {
-        run_gui_mode(args)?;
+        run_gui_mode(cam, args)?;
     }
 
     Ok(())
 }
 
-fn run_terminal_mode(mut cam: videoio::VideoCapture, args: Args) -> anyhow::Result<()> {
+fn run_terminal_mode(mut cam: videoio::VideoCapture, mut args: Args) -> anyhow::Result<()> {
     let mut stdout = stdout();
     terminal::enable_raw_mode()?;
     stdout.execute(terminal::EnterAlternateScreen)?;
     stdout.execute(cursor::Hide)?;
 
-    let char_set_str = CharSet::get_chars(&args.charset);
-    let char_vec: Vec<char> = char_set_str.chars().collect();
-    let width = args.width;
-
+    let mut width = args.width;
+    let mut show_ui = true;
     let mut frame = Mat::default();
     let mut frame_count = 0;
     let mut rng = rand::thread_rng();
@@ -294,18 +355,26 @@ fn run_terminal_mode(mut cam: videoio::VideoCapture, args: Args) -> anyhow::Resu
     loop {
         if event::poll(std::time::Duration::from_millis(1))? {
             if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
-                    break;
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('m') => args.mode = args.mode.next(),
+                    KeyCode::Char('c') => args.charset = args.charset.next(),
+                    KeyCode::Char('+') | KeyCode::Char('=') => width = (width + 2).min(500),
+                    KeyCode::Char('-') | KeyCode::Char('_') => width = (width - 2).max(10),
+                    KeyCode::Char('h') => show_ui = !show_ui,
+                    _ => {}
                 }
             }
         }
 
-        get_frame_data(&mut cam, &mut frame, true).map_err(|e| anyhow::anyhow!(e))?;
+        get_frame_data(&mut cam, &mut frame, args.flip).map_err(|e| anyhow::anyhow!(e))?;
 
         if frame.empty() {
             continue;
         }
 
+        let char_set_str = args.charset.get_chars();
+        let char_vec: Vec<char> = char_set_str.chars().collect();
         let mut ascii_data: Vec<Vec<(BlockSample, char)>> = Vec::new();
         assign_chars(&mut ascii_data, char_set_str, &frame, width).map_err(|e| anyhow::anyhow!(e))?;
 
@@ -327,6 +396,29 @@ fn run_terminal_mode(mut cam: videoio::VideoCapture, args: Args) -> anyhow::Resu
                 stdout.queue(Print(final_char))?;
             }
             stdout.queue(Print("\r\n"))?;
+        }
+
+        if show_ui {
+            let (term_cols, term_rows) = terminal::size()?;
+            
+            // Top Help Overlay
+            stdout.queue(cursor::MoveTo(0, 0))?;
+            stdout.queue(SetForegroundColor(Color::White))?;
+            stdout.queue(SetBackgroundColor(Color::Black))?;
+            stdout.queue(Print(" [m]ode | [c]harset | [+/-] width | [h]ide UI | [q]uit "))?;
+            
+            // Bottom Status Bar
+            if term_rows > 0 {
+                stdout.queue(cursor::MoveTo(0, term_rows - 1))?;
+                let status_text = format!(" MODE: {:?} | CHARSET: {:?} | WIDTH: {} ", args.mode, args.charset, width);
+                let padding_len = (term_cols as usize).saturating_sub(status_text.len());
+                let padding = " ".repeat(padding_len);
+                
+                stdout.queue(SetForegroundColor(Color::Black))?;
+                stdout.queue(SetBackgroundColor(Color::White))?;
+                stdout.queue(Print(format!("{}{}", status_text, padding)))?;
+                stdout.queue(SetBackgroundColor(Color::Reset))?;
+            }
         }
 
         stdout.flush()?;
@@ -351,17 +443,13 @@ struct ShellArtApp {
 }
 
 impl ShellArtApp {
-    fn new(device: i32, args: Args) -> anyhow::Result<Self> {
-        let cam = videoio::VideoCapture::new(device, videoio::CAP_ANY)?;
-        if !cam.is_opened().map_err(|e| anyhow::anyhow!(e))? {
-            return Err(anyhow::anyhow!("Could not open video device {}", device));
-        }
+    fn new(cam: videoio::VideoCapture, args: Args) -> anyhow::Result<Self> {
         Ok(Self {
             cam,
             mode: args.mode,
             charset: args.charset,
             width: args.width,
-            flipped: true,
+            flipped: args.flip,
             font_size: 8.0,
             frame_count: 0,
         })
@@ -393,6 +481,11 @@ impl eframe::App for ShellArtApp {
             ui.label("Charset:");
             ui.radio_value(&mut self.charset, CharSet::Default, "Default");
             ui.radio_value(&mut self.charset, CharSet::Retro, "Retro");
+            ui.radio_value(&mut self.charset, CharSet::Blocks, "Blocks");
+            ui.radio_value(&mut self.charset, CharSet::Modern, "Modern");
+            ui.radio_value(&mut self.charset, CharSet::Binary, "Binary");
+            ui.radio_value(&mut self.charset, CharSet::Minimalist, "Minimalist");
+            ui.radio_value(&mut self.charset, CharSet::Slashed, "Slashed");
             ui.radio_value(&mut self.charset, CharSet::Light, "Light");
             ui.radio_value(&mut self.charset, CharSet::Detailed, "Detailed");
         });
@@ -440,7 +533,7 @@ impl eframe::App for ShellArtApp {
     }
 }
 
-fn run_gui_mode(args: Args) -> anyhow::Result<()> {
+fn run_gui_mode(cam: videoio::VideoCapture, args: Args) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 720.0]),
         ..Default::default()
@@ -450,7 +543,7 @@ fn run_gui_mode(args: Args) -> anyhow::Result<()> {
         "ShellArt GUI",
         options,
         Box::new(|_cc| {
-            let app = ShellArtApp::new(args.device, args).expect("Failed to initialize app");
+            let app = ShellArtApp::new(cam, args).expect("Failed to initialize app");
             Box::new(app)
         }),
     ).map_err(|e| anyhow::anyhow!("eframe error: {}", e))
